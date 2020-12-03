@@ -1,3 +1,4 @@
+
 local byte = string.char
 local binfile = nil
 local map = {}
@@ -10,18 +11,59 @@ local checkYflips = false
 local cmdline = false
 
 --
---	seperate platform from code 
+--	seperate platform from code
 --
 
-function nswap(a)
+-- utility to swap nybbles
+
+local function nswap(a)
 	return (((a & 0xf) << 4) | ((a>>4)&0xf))
 end
--- Mega 65 format 
 
-local MEGA65 = {
-	supportsPalette = 1
-}
-function MEGA65:ExportPal()
+--
+-- 4bpp format with 444 palettes
+-- Mega drive compatible
+--
+
+local BPP4 = {}
+function BPP4.ExportTile( tile )
+	for y=0,7 do
+		for xp = 0, 7,2 do
+			local px0 = tile.pixels[1+((y*8) + xp)]	-- stupid off by 1
+			local px1 = tile.pixels[2+((y*8) + xp)]	-- stupid off by 1
+			px0 = px1 & 0xf | ((px0&0xf)<<4)
+			io.write(byte(px0))
+		end
+	end
+end
+
+function BPP4.ExportMap( map , offset )
+	print("BPP4 map")
+	for k,v in pairs(map) do
+		local mindex = (v - 1) + offset
+		io.write(byte(mindex))
+	end
+end
+
+
+function BPP4.ExportPal()
+	for c = 0, #colors-1 do
+		local index = 0
+		local color = colors:getColor(c)
+		index = (color.red>>4)
+		io.write(byte(index))
+		index = (color.green&0xf0)
+		index = index + (color.blue>>4)
+		io.write(byte(index))
+	end
+end
+
+--
+-- Mega 65 format
+-- 8bpp with palettes split into RGB channels with nybble swapped
+--
+local MEGA65 = {}
+function MEGA65.ExportPal()
 	for c = 0, #colors-1 do
 		local color = colors:getColor(c)
 		io.write(byte(nswap(color.red)))
@@ -35,58 +77,61 @@ function MEGA65:ExportPal()
 		io.write(byte(nswap(color.blue)))
 	end
 end
-function MEGA65:ExportTile(tile)
-	for y=0,7 do 
-		for xp = 0, 7 do 
-			px = tile.pixels[1+((y*8) + xp)]	-- stupid off by 1
+function MEGA65.ExportTile(tile)
+	for y=0,7 do
+		for xp = 0, 7 do
+			local px = tile.pixels[1+((y*8) + xp)]	-- stupid off by 1
 			io.write(byte(px))
 		end
 	end
 end
 
-function MEGA65:ExportMap(map,offset)
+function MEGA65.ExportMap(map,offset)
 	for k,v in pairs(map) do 
-		mindex = (v - 1) + offset
+		local mindex = (v - 1) + offset
 		io.write(byte(mindex&0xff))
 		io.write(byte((mindex>>8)&0xff))
 	end
 end
 
+--
 -- C64 MC mode
+-- 2bpp wide pixels 
+--
+
 local C64 = {
 	luminance =  {0x0,0xf,0x3,0xb,0x5,0x9,0x1,0xd,0x6,0x2,0xa,0x4,0x8,0xe,0x7,0xc,0xff}
 }
 
-function C64:ExportMap(map,offset)
+function C64.ExportMap(map,offset)
 	for k,v in pairs(map) do 
-		mindex = (v - 1) + offset
+		local mindex = (v - 1) + offset
 		io.write(byte(mindex))
 	end
 end
 
-function C64:ExportTile(tile)
+function C64.ExportTile(tile)
 	if #tile.colors<=4 then
-		
-		--	sort the colors table by brightness 
+		--	sort the colors table by brightness
 		--	this seems to be quite nice
 		table.sort(tile.colors, function(a, b) return C64.luminance[1+(a&0xf)] < C64.luminance[1+(b&0xf)] end)
-		for y=0,7 do 
+		for y=0,7 do
 			--	clear the byte we write
-			c = 0
+			local c = 0
 			--	for the bits we scan every 2 pixels ( MC mode )
-			--	we assume odd pixels are the same and don't care 
-			for xp = 0, 7, 2 do 
+			--	we assume odd pixels are the same and don't care
+			for xp = 0, 7, 2 do
 				--	get the pixel from the tile data
-				px = tile.pixels[1+((y*8) + xp)]
-				--	double check for nil 
+				local px = tile.pixels[1+((y*8) + xp)]
+				--	double check for nil
 				if px==nil then
 					px = 0
 				end
 				--	output color is an index between 0-#ncolors
 				local oc = 0 
 				--	check the colors array for this color to find it's index
-				for ci = 1, #tile.colors do 
-					if tile.colors[ci] == px then 
+				for ci = 1, #tile.colors do
+					if tile.colors[ci] == px then
 						oc = ci-1
 						break
 					end
@@ -112,9 +157,9 @@ function C64:ExportTile(tile)
 end
 
 -- We create a string for each char for comparison later
--- note this is the raw 8bpp tile 
+-- note this is the raw 8bpp tile
 
-local function getTileData(img, x, y ,tw , th, mask)
+local function ExtractTile(img, x, y ,tw , th, mask)
 	local res = {}
 	res.pixels = {}
 	res.colors = {}
@@ -122,26 +167,29 @@ local function getTileData(img, x, y ,tw , th, mask)
 	res.xflipstring = ""
 	res.yflipstring = ""
 	res.xyflipstring = ""
-	res.flag = 0 
+	res.flag = 0
+	local xfpx = 0
+	local yfpx = 0
+	local xyfpx = 0
 
 	table.insert(res.colors,0)
 	for  cy = 0, th-1 do
 		for cx = 0, tw-1 do
-				--	get the pixel 
-				px = img:getPixel(cx+x, cy+y)
+				--	get the pixel
+				local px = img:getPixel(cx+x, cy+y)
 				-- store it in the string for comparison 
 				res.string = res.string .. string.format("%02x",px)
-				-- if we need xflip check 
-				if checkXflips == true then 
+				-- if we need xflip check
+				if checkXflips == true then
 					xfpx = img:getPixel(x + ( tw-1 - cx), cy+y)
 					res.xflipstring = res.xflipstring .. string.format("%02x",xfpx)
 				end 
 				-- if we need yflip check
-				if checkYflips == true then 
+				if checkYflips == true then
 					yfpx = img:getPixel(x + cx , y + ( ( th-1 - cy)))
 					res.yflipstring = res.yflipstring .. string.format("%02x",yfpx)
 				end
-				-- if we need both 
+				-- if we need both
 				if checkXflips == true and checkYflips == true then 
 					xyfpx = img:getPixel(x + ( tw-1 - cx) , y + ( ( th-1 - cy)))
 					res.xyflipstring = res.xyflipstring .. string.format("%02x",xyfpx)
@@ -151,13 +199,13 @@ local function getTileData(img, x, y ,tw , th, mask)
 				--	check the colors for this tile 
 				local found = -1
 				for i,v in ipairs(res.colors) do
-					if px==v then 
-						found = i 
+					if px==v then
+						found = i
 						break
 					end
 				end
-				-- if we didn't find that color, insert it 
-				if found==-1 then 
+				-- if we didn't find that color, insert it
+				if found==-1 then
 					table.insert(res.colors,px)
 					found = #res.colors
 				end
@@ -202,22 +250,12 @@ local function getTileData(img, x, y ,tw , th, mask)
   -- we add it and return the index of it.
 	table.insert(images, res)
 
---[[
-	if #images<32 then 
-		print(#images)
-		print("unflipped")
-		print(res.string)
-		print("x-flipped")
-		print(res.xflipstring)
-		print("y-flipped")
-		print(res.yflipstring)
-		print("xy-flipped")
-		print(res.xyflipstring)
-	end
-]]--
 	return #images
 end
 
+--
+-- encode the map into a normal x first grid
+--
 local function EncodeMap(input,tw,th,mask)
 	local sprite = input.sprite
 	local img = Image(sprite.spec)
@@ -228,12 +266,15 @@ local function EncodeMap(input,tw,th,mask)
 	-- collect the tiles this frame
 	for y = 0, img.height-1, tw do
 		for x = 0, img.width-1, th do
-			local data = getTileData(img, x, y , tw, th,mask)
-			table.insert(map,data)
+			table.insert(map,ExtractTile(img, x, y , tw, th,mask))
 		end
 	end
 end
 
+--
+-- functionality 
+-- encode map and tiles and palette
+--
 function Tilemizer(type,exportChars,exportMap,exportPal,OffsetTile,Xflips,Yflips)
 	checkXflips = Xflips
 	checkYflips = Yflips
@@ -242,18 +283,23 @@ function Tilemizer(type,exportChars,exportMap,exportPal,OffsetTile,Xflips,Yflips
 		System = C64
 		EncodeMap(app.activeFrame,8,8,0xf)
 	end
+	if type=="BPP4" then 
+		if cmdline==true then print("4bpp mode") end
+		System = BPP4
+		EncodeMap(app.activeFrame,8,8,0xf)
+	end
 	if type=="MEGA65" then 
 		if cmdline==true then print("MEGA65 mode") end
 		System = MEGA65
 		EncodeMap(app.activeFrame,8,8,0xff)
 	end
 	--	save colors
-	if System.supportsPalette==1 then 
+	if System.ExportPal~=nil then 
 		if exportPal~=nil then 
 			if cmdline==true then print("write "..exportPal) end
 			binfile = io.open(exportPal, "wb")
 			io.output(binfile)
-			System:ExportPal()
+			System.ExportPal()
 			io.close(binfile)
 		end
 	end
@@ -263,7 +309,7 @@ function Tilemizer(type,exportChars,exportMap,exportPal,OffsetTile,Xflips,Yflips
 		binfile = io.open(exportChars, "wb")
 		io.output(binfile)
 		for key,tile in pairs(images) do 
-			System:ExportTile(tile)
+			System.ExportTile(tile)
 		end 
 		io.close(binfile)
 	end
@@ -274,14 +320,14 @@ function Tilemizer(type,exportChars,exportMap,exportPal,OffsetTile,Xflips,Yflips
 		if cmdline==true then print("write "..exportMap) end
 		binfile = io.open(exportMap, "wb")
 		io.output(binfile)
-		System:ExportMap(map,OffsetTile)
+		System.ExportMap(map,OffsetTile)
 		io.close(binfile)
 	end
 end
 
 cmdline = (app.params["exportChars"]~=nil) or (app.params["exportMap"]~=nil)
 
-if cmdline==true then 
+if cmdline==true then
 	-- some default names
 	local format = app.params["format"] or "MEGA65"
 	local exportChars = app.params["exportChars"] or "cells.bin"
@@ -289,14 +335,22 @@ if cmdline==true then
 	local exportPal = app.params["exportPal"] or "palette.bin"
 	local xflip = app.params["xflip"] or false
 	local yflip = app.params["yflip"] or false
-	local OffsetTile = app.params["OffsetTile"] or 0 
+	local OffsetTile = app.params["OffsetTile"] or 0
+
+	print("Format =" .. format)
+	print("exportChars =" .. exportChars)
+	print("exportMap =" .. exportMap)
+	print("exportPal =" .. exportPal)
+	if xflip==true then print("xflip reduction") end
+	if yflip==true then print("yflip reduction") end
+	print("OffsetTile =" .. OffsetTile)
+
 	Tilemizer(format,exportChars,exportMap,exportPal,OffsetTile,xflip,yflip)
-	print(output_message)
 else 
 	local dlg = Dialog("Tilemizer")
 	dlg:file{ id="exportChars",
 						label="Chars",
-						title="C64 Char Export",
+						title="Char Export",
 						open=false,
 						save=true,
 						filename="chars.bin",
@@ -304,7 +358,7 @@ else
 
 	dlg:file{ id="exportMap",
 						label="Map",
-						title="C64 Map Export",
+						title="Map Export",
 						open=false,
 						save=true,
 						filename="map.bin",
@@ -312,7 +366,7 @@ else
 
 	dlg:file{ id="exportPal",
 						label="Pal",
-						title="Mega Map Export",
+						title="Palette Export",
 						open=false,
 						save=true,
 						filename="pal.bin",
@@ -321,7 +375,7 @@ else
 	dlg:combobox{ id="TileFormat",
 						label="TileFormat",
 						option="C64",
-						options={ "C64","MEGA65"} }
+						options={ "C64","MEGA65","BPP4"} }
 	dlg:number{ id="OffsetTile",
 						label="Offset#",
 						text="0",
